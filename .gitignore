@@ -70,4 +70,4 @@ docs/_build/
 
 # Pyenv
 .python-version
-FaceFinder
+/FaceFinder
