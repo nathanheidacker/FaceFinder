@@ -22,7 +22,7 @@ from . import metadata
 from .interact import InteractiveSession
 
 # Typing imports
-from typing import Callable, Any
+from typing import Callable, Any, Optional
 
 
 def extract_faces(image_path: Path, model: str) -> None:
@@ -125,7 +125,7 @@ def get_representations(
     return paths, representations
 
 
-# n_embedding_images x 512 @ n_input_images x 512 -> n_input_images x n_embedding_images
+# n_embedding_images x 512 @ n_candidate_images x 512 -> n_candidate_images x n_embedding_images
 def cosine_dist(
     source_reprs: list[list[float]],
     target_reprs: list[list[float]],
@@ -158,39 +158,42 @@ def filter_duplicates(paths: list[Path], distances: list[float]) -> list[int]:
 
 def get_filtered(
     target_repr: list[float],
-    input_reprs: list[list[float]],
-    input_paths: list[Path],
+    candidate_reprs: list[list[float]],
+    candidate_paths: list[Path],
 ) -> tuple[list[Path], list[list[float]], list[float]]:
     # Finding metrics for distance from target image (BASE_FACE)
-    target_distances = cosine_dist(target_repr, input_reprs)
+    target_distances = cosine_dist(target_repr, candidate_reprs)
 
     # Filtering embedding duplicates by distance to target
-    non_duplicate_idx = filter_duplicates(input_paths, target_distances)
-    input_paths = np.array(input_paths)[non_duplicate_idx]
-    input_reprs = np.array(input_reprs)[non_duplicate_idx]
+    non_duplicate_idx = filter_duplicates(candidate_paths, target_distances)
+    candidate_paths = np.array(candidate_paths)[non_duplicate_idx]
+    candidate_reprs = np.array(candidate_reprs)[non_duplicate_idx]
     target_distances = np.array(target_distances)[non_duplicate_idx]
 
-    return input_paths, input_reprs, target_distances
+    return candidate_paths, candidate_reprs, target_distances
 
 
 def calculate_image_scores(
     embedding_target_distances: list[float],
-    input_embedding_distances: list[list[float]],
+    candidate_embedding_distances: list[list[float]],
     weight_relevance: int = 1,
 ) -> list[float]:
     weights = np.power(embedding_target_distances.T, weight_relevance)
     weighted_distances = np.power(
-        input_embedding_distances * weights, 1 / (weight_relevance + 1)
+        candidate_embedding_distances * weights, 1 / (weight_relevance + 1)
     )
-    input_scores = np.mean(weighted_distances, axis=1)
-    return input_scores
+    candidate_scores = np.mean(weighted_distances, axis=1)
+    return candidate_scores
 
 
 def get_embedding_metrics(
     model: str,
-    target_path: Path = metadata.PATHS.TARGET_IMAGE,
-    embedding_dir: Path = metadata.PATHS.EMBEDDING_IMAGES,
+    target_path: Optional[Path] = None,
+    embedding_dir: Optional[Path] = None,
 ) -> dict[str, Any]:
+    target_path = target_path or metadata.PATHS.TARGET_IMAGE
+    embedding_dir = embedding_dir or metadata.PATHS.EMBEDDING_IMAGES
+
     # Initial (non-filtered) target/embedding representations
     target_representation = get_representation(target_path, model, skip_face=True)
     paths, representations = get_representations(embedding_dir, model, skip_face=True)
@@ -220,100 +223,163 @@ def get_embedding_metrics(
     }
 
 
-def get_input_metrics(
+def get_candidate_metrics(
     model: str,
     target_repr: list[float],
     embedding_reprs: list[list[float]],
     embedding_target_distances: list[float],
-    input_dir: Path = metadata.PATHS.UNPROCESSED_IMAGES,
+    candidate_dir: Optional[Path] = None,
     weight_relevance: int = 1,
 ) -> dict[str, Any]:
-    # Initial (non-filtered) input representations
-    paths, representations = get_representations(input_dir, model)
+    candidate_dir = candidate_dir or metadata.PATHS.UNPROCESSED_IMAGES
+
+    # Initial (non-filtered) candidate representations
+    paths, representations = get_representations(candidate_dir, model)
     x = 0
 
     # Filtering processed images by distance to target
-    paths, representations, input_target_distances = get_filtered(
+    paths, representations, candidate_target_distances = get_filtered(
         target_repr, representations, paths
     )
 
-    # Distances between inputs and embeddings
-    input_embedding_distances = cosine_dist(embedding_reprs, representations)
+    # Distances between candidates and embeddings
+    candidate_embedding_distances = cosine_dist(embedding_reprs, representations)
 
-    # Weighting the input distances by the embedding image scores (relative to the target)
+    # Weighting the candidate distances by the embedding image scores (relative to the target)
     scores = calculate_image_scores(
-        embedding_target_distances, input_target_distances, weight_relevance
+        embedding_target_distances, candidate_target_distances, weight_relevance
     )
 
-    # Gathering sorted indices for interactive functions
-    match_indices = list(
+    # Doing the same for embedding images
+    embedding_scores = calculate_image_scores(
+        embedding_target_distances, embedding_target_distances, weight_relevance
+    )
+
+    # Gathering sorted indices for interactive functions (candidate images only)
+    candidate_embedding_idx = list(
         zip(
             *np.unravel_index(
-                np.argsort(input_embedding_distances, axis=None),
-                input_embedding_distances.shape,
+                np.argsort(candidate_embedding_distances, axis=None),
+                candidate_embedding_distances.shape,
             )
         )
     )
-    cum_indices = np.argsort(scores, axis=None).tolist()
-    target_indices = np.argsort(input_target_distances, axis=None).tolist()
+    candidate_score_idx = np.argsort(scores, axis=None).tolist()
+    candidate_target_idx = np.argsort(candidate_target_distances, axis=None).tolist()
+
+    # Gathering sorted indices for interactive functions (embedding images only)
+    embedding_score_idx = np.argsort(embedding_scores, axis=None).tolist()
+    embedding_target_idx = np.argsort(embedding_target_distances, axis=None).tolist()
 
     return {
         "paths": paths,
         "representations": representations,
-        "input_target_distances": input_target_distances,
-        "input_embedding_distances": input_embedding_distances,
-        "input_scores": scores,
-        "match_indices": match_indices,
-        "cum_indices": cum_indices,
-        "target_indices": target_indices,
+        "candidate_target_distances": candidate_target_distances,
+        "candidate_embedding_distances": candidate_embedding_distances,
+        "candidate_scores": scores,
+        "embedding_scores": embedding_scores,
+    }
+
+
+def get_indices(metrics: dict) -> dict:
+    # Gathering sorted indices for interactive functions (candidate images only)
+    candidate_embedding_distances = metrics["distances"]["candidate_embedding"]
+    candidate_scores = metrics["metrics"]["candidate_scores"]
+    candidate_target_distances = metrics["distances"]["candidate_target"]
+
+    candidate_embedding_idx = list(
+        zip(
+            *np.unravel_index(
+                np.argsort(candidate_embedding_distances, axis=None),
+                candidate_embedding_distances.shape,
+            )
+        )
+    )
+    candidate_score_idx = np.argsort(candidate_scores, axis=None).tolist()
+    candidate_target_idx = np.argsort(candidate_target_distances, axis=None).tolist()
+
+    # Gathering sorted indices for interactive functions (embedding images only)
+    embedding_embedding_distances = metrics["distances"]["embedding_embedding"]
+    embedding_scores = metrics["metrics"]["embedding_scores"]
+    embedding_target_distances = metrics["distances"]["embedding_target"]
+
+    embedding_embedding_idx = np.argsort(
+        embedding_embedding_distances, axis=None
+    ).tolist()
+    embedding_score_idx = np.argsort(embedding_scores, axis=None).tolist()
+    embedding_target_idx = np.argsort(embedding_target_distances, axis=None).tolist()
+
+    return {
+        "candidate_embedding_idx": candidate_embedding_idx,
+        "candidate_score_idx": candidate_score_idx,
+        "candidate_target_idx": candidate_target_idx,
+        "embedding_embedding_idx": embedding_embedding_idx,
+        "embedding_score_idx": embedding_score_idx,
+        "embedding_target_idx": embedding_target_idx,
     }
 
 
 def get_metrics(
     model: str,
-    target_path: str | Path = metadata.PATHS.TARGET_IMAGE,
-    embedding_dir: str | Path = metadata.PATHS.EMBEDDING_IMAGES,
-    input_dir: str | Path = metadata.PATHS.UNPROCESSED_IMAGES,
+    target_path: Optional[str | Path] = None,
+    embedding_dir: Optional[str | Path] = None,
+    candidate_dir: Optional[str | Path] = None,
     weight_relevance: int = 1,
 ) -> dict[str, Any]:
+    target_path = target_path or metadata.PATHS.TARGET_IMAGE
+    embedding_dir = embedding_dir or metadata.PATHS.EMBEDDING_IMAGES
+    candidate_dir = candidate_dir or metadata.PATHS.UNPROCESSED_IMAGES
+
     embedding_metrics = get_embedding_metrics(model, target_path, embedding_dir)
-    input_metrics = get_input_metrics(
+    candidate_metrics = get_candidate_metrics(
         model,
         embedding_metrics["target_representation"],
         embedding_metrics["representations"],
         embedding_metrics["embedding_target_distances"],
-        input_dir,
+        candidate_dir,
         weight_relevance,
     )
-    return {
+    metrics = {
         "paths": {
             "target": embedding_metrics["target_path"],
             "embedding": embedding_metrics["paths"],
-            "input": input_metrics["paths"],
+            "candidate": candidate_metrics["paths"],
         },
         "representations": {
             "target": embedding_metrics["target_representation"],
             "embedding": embedding_metrics["representations"],
-            "input": input_metrics["representations"],
+            "candidate": candidate_metrics["representations"],
         },
         "distances": {
             "embedding_target": embedding_metrics["embedding_target_distances"],
             "embedding_embedding": embedding_metrics["embedding_embedding_distances"],
-            "input_target": input_metrics["input_target_distances"],
-            "input_embedding": input_metrics["input_embedding_distances"],
-        },
-        "indices": {
-            "match": input_metrics["match_indices"],
-            "cumulative": input_metrics["cum_indices"],
-            "target": input_metrics["target_indices"],
+            "candidate_target": candidate_metrics["candidate_target_distances"],
+            "candidate_embedding": candidate_metrics["candidate_embedding_distances"],
         },
         "metrics": {
             "embedding_accuracy": embedding_metrics["mean_target_distance"],
             "embedding_coherence": embedding_metrics["mean_embedding_distance"],
-            "scores": input_metrics["input_scores"],
+            "candidate_scores": candidate_metrics["candidate_scores"],
+            "embedding_scores": candidate_metrics["embedding_scores"],
         },
         "metadata": {"model": model, "weight_relevance": weight_relevance},
     }
+    metrics["indices"] = get_indices(metrics)
+    return metrics
+
+
+def get_quantiles(metrics: dict) -> dict:
+    preprocess = {
+        "embedding_target_distances": metrics["distances"]["embedding_target"],
+        "embedding_embedding_distances": metrics["distances"]["embedding_embedding"],
+        "embedding_scores": metrics["metrics"]["embedding_scores"],
+        "candidate_target_distances": metrics["distances"]["candidate_target"],
+        "candidate_embedding_distances": metrics["distances"]["candidate_embedding"],
+        "candidate_scores": metrics["metrics"]["candidate_scores"],
+    }
+
+    quantile_values = np.arange(0, 1, 0.01)
+    return {k: np.quantile(v, quantile_values) for k, v in preprocess.items()}
 
 
 def create_scaler(n: float) -> Callable:
@@ -351,8 +417,8 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     distances = {
         "embedding_target": [],
         "embedding_embedding": [],
-        "input_target": [],
-        "input_embedding": [],
+        "candidate_target": [],
+        "candidate_embedding": [],
     }
     for m, mean in zip(metrics, means):
         scaler = create_scaler(mean)
@@ -365,63 +431,62 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         for k, v in distances.items()
     }
 
-    scores = calculate_image_scores(
+    candidate_scores = calculate_image_scores(
         distances["embedding_target"],
-        distances["input_embedding"],
+        distances["candidate_embedding"],
+        np.mean(metadata["weight_relevance"]),
+    )
+    embedding_scores = calculate_image_scores(
+        distances["embedding_target"],
+        distances["embedding_embedding"],
         np.mean(metadata["weight_relevance"]),
     )
     embedding_accuracy = np.mean(distances["embedding_target"])
     embedding_coherence = np.mean(distances["embedding_embedding"])
-    metrics = {
+    sub_metrics = {
         "embedding_accuracy": embedding_accuracy,
         "embedding_coherence": embedding_coherence,
-        "scores": scores,
+        "candidate_scores": candidate_scores,
+        "embedding_scores": embedding_scores,
     }
 
-    match_indices = list(
-        zip(
-            *np.unravel_index(
-                np.argsort(distances["input_embedding"], axis=None),
-                distances["input_embedding"].shape,
-            )
-        )
-    )
-    cumulative_indices = np.argsort(scores).tolist()
-    target_indices = np.argsort(distances["input_target"].flatten()).tolist()
-
-    indices = {
-        "match": match_indices,
-        "cumulative": cumulative_indices,
-        "target": target_indices,
-    }
-
-    return {
+    metrics = {
         "paths": paths,
         "representations": representations,
         "distances": distances,
-        "indices": indices,
-        "metrics": metrics,
+        "metrics": sub_metrics,
         "metadata": metadata,
     }
+
+    metrics["indices"] = get_indices(metrics)
+    metrics["quantiles"] = get_quantiles(metrics)
+
+    return metrics
 
 
 def get_multimodel_metrics(
     models: list[str],
-    target_path: str | Path = metadata.PATHS.TARGET_IMAGE,
-    embedding_dir: str | Path = metadata.PATHS.EMBEDDING_IMAGES,
-    input_dir: str | Path = metadata.PATHS.UNPROCESSED_IMAGES,
+    target_path: Optional[str | Path] = None,
+    embedding_dir: Optional[str | Path] = None,
+    candidate_dir: Optional[str | Path] = None,
     weight_relevance: int = 1,
 ) -> dict[str, Any]:
+    target_path = target_path or metadata.PATHS.TARGET_IMAGE
+    embedding_dir = embedding_dir or metadata.PATHS.EMBEDDING_IMAGES
+    candidate_dir = candidate_dir or metadata.PATHS.UNPROCESSED_IMAGES
+
     all_metrics = [
-        get_metrics(model, target_path, embedding_dir, input_dir, weight_relevance)
+        get_metrics(model, target_path, embedding_dir, candidate_dir, weight_relevance)
         for model in models
     ]
     return merge_metrics(all_metrics)
 
 
 def save_processed_embedding_images(
-    metrics: dict[str, Any], output_dir: Path = metadata.PATHS.EMBEDDING_SCORES_DIR
+    metrics: dict[str, Any], output_dir: Optional[Path] = None
 ) -> None:
+    output_dir = output_dir or metadata.PATHS.EMBEDDING_SCORES_DIR
+
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -441,19 +506,21 @@ def save_processed_embedding_images(
         cv2.imwrite(image_path, cv2.imread(str(path)))
 
 
-def save_processed_input_images(
-    metrics: dict[str, Any], output_dir: Path = metadata.PATHS.PROCESSED_IMAGES
+def save_processed_candidate_images(
+    metrics: dict[str, Any], output_dir: Optional[Path] = None
 ) -> None:
+    output_dir = output_dir or metadata.PATHS.PROCESSED_IMAGES
+
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    n_images = len(metrics["paths"]["input"])
+    n_images = len(metrics["paths"]["candidate"])
     for path, score, accuracy, coherence in tqdm(
         zip(
-            metrics["paths"]["input"],
+            metrics["paths"]["candidate"],
             metrics["metrics"]["scores"],
-            metrics["distances"]["input_target"],
-            np.mean(metrics["distances"]["input_embedding"], axis=1),
+            metrics["distances"]["candidate_target"],
+            np.mean(metrics["distances"]["candidate_embedding"], axis=1),
         ),
         desc=f"Saving {n_images}, Processed Images",
         total=n_images,
@@ -468,11 +535,13 @@ def save_processed_input_images(
 
 def main(interactive: bool = False) -> None:
     # Processing Images
-    metrics = get_multimodel_metrics(["Facenet512"])  # "SFace", "ArcFace"])
+    metrics = get_multimodel_metrics(
+        ["Facenet512"], weight_relevance=1
+    )  # "SFace", "ArcFace"])
 
     # Saving scored images
     save_processed_embedding_images(metrics)
-    save_processed_input_images(metrics)
+    save_processed_candidate_images(metrics)
 
     if interactive:
         InteractiveSession(metrics).session()
