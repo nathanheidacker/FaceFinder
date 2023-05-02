@@ -518,7 +518,7 @@ def save_processed_candidate_images(
     for path, score, accuracy, coherence in tqdm(
         zip(
             metrics["paths"]["candidate"],
-            metrics["metrics"]["scores"],
+            metrics["metrics"]["candidate_scores"],
             metrics["distances"]["candidate_target"],
             np.mean(metrics["distances"]["candidate_embedding"], axis=1),
         ),
