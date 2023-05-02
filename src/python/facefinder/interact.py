@@ -30,8 +30,8 @@ class InteractiveSession:
         cv2.destroyAllWindows()
 
     def show_match(self, rank: int) -> None:
-        idx = self.metrics["indices"]["match"][rank]
-        j = self.metrics["paths"]["input"][idx[0]]
+        idx = self.metrics["indices"]["candidate_embedding"][rank]
+        j = self.metrics["paths"]["candidate"][idx[0]]
         k = self.metrics["paths"]["embedding"][idx[1]]
 
         im1 = cv2.imread(str(j))
@@ -41,10 +41,10 @@ class InteractiveSession:
         h2, w2 = im2.shape[:2]
         h, w = max(h1, h2), max(w1, w2)
 
-        match_distance = self.metrics["distances"]["input_embedding"][idx]
-        target_distance = self.metrics["distances"]["input_target"][idx[0]].item()
+        match_distance = self.metrics["distances"]["candidate_embedding"][idx]
+        target_distance = self.metrics["distances"]["candidate_target"][idx[0]].item()
         embedding_distance = np.mean(
-            self.metrics["distances"]["input_embedding"][idx[0]]
+            self.metrics["distances"]["candidate_embedding"][idx[0]]
         )
         score = self.metrics["metrics"]["scores"][idx[0]]
 
@@ -81,16 +81,18 @@ class InteractiveSession:
 
     def show_cumulative(self, rank: int, target: bool = False) -> None:
         idx = (
-            self.metrics["indices"]["target"][rank]
+            self.metrics["indices"]["candidate_target_idx"][rank]
             if target
-            else self.metrics["indices"]["cumulative"][rank]
+            else self.metrics["indices"]["candidate_score"][rank]
         )
-        image = cv2.imread(str(self.metrics["paths"]["input"][idx]))
+        image = cv2.imread(str(self.metrics["paths"]["candidate"][idx]))
 
         h, w = image.shape[:2]
-        target_distance = self.metrics["distances"]["input_target"][idx].item()
-        embedding_distance = np.mean(self.metrics["distances"]["input_embedding"][idx])
-        score = self.metrics["metrics"]["scores"][idx]
+        target_distance = self.metrics["distances"]["candidate_target"][idx].item()
+        embedding_distance = np.mean(
+            self.metrics["distances"]["candidate_embedding"][idx]
+        )
+        score = self.metrics["metrics"]["candidate_scores"][idx]
 
         text_area = np.zeros((h, 500, 3)).astype("uint8")
         text_area.fill(255)
@@ -134,7 +136,7 @@ class InteractiveSession:
                 f"Missing arguments: Please provide a function (m, e, t) and a stopping point/range (as an integer)"
             )
         f, _range, *other_args = parts
-        n_images = len(self.metrics["paths"]["input"])
+        n_images = len(self.metrics["paths"]["candidate"])
 
         if f.startswith("m"):
             f = self.show_match
