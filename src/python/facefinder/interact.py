@@ -30,7 +30,7 @@ class InteractiveSession:
         cv2.destroyAllWindows()
 
     def show_match(self, rank: int) -> None:
-        idx = self.metrics["indices"]["candidate_embedding"][rank]
+        idx = self.metrics["indices"]["candidate_embedding_pair_idx"][rank]
         j = self.metrics["paths"]["candidate"][idx[0]]
         k = self.metrics["paths"]["embedding"][idx[1]]
 
@@ -41,12 +41,12 @@ class InteractiveSession:
         h2, w2 = im2.shape[:2]
         h, w = max(h1, h2), max(w1, w2)
 
-        match_distance = self.metrics["distances"]["candidate_embedding"][idx]
+        match_distance = self.metrics["distances"]["pairs"][idx]
         target_distance = self.metrics["distances"]["candidate_target"][idx[0]].item()
         embedding_distance = np.mean(
             self.metrics["distances"]["candidate_embedding"][idx[0]]
         )
-        score = self.metrics["metrics"]["scores"][idx[0]]
+        score = self.metrics["metrics"]["candidate_scores"][idx[0]]
 
         text_area = np.zeros((h, 500, 3), dtype="uint8")
         text_area.fill(255)
@@ -83,7 +83,7 @@ class InteractiveSession:
         idx = (
             self.metrics["indices"]["candidate_target_idx"][rank]
             if target
-            else self.metrics["indices"]["candidate_score"][rank]
+            else self.metrics["indices"]["candidate_score_idx"][rank]
         )
         image = cv2.imread(str(self.metrics["paths"]["candidate"][idx]))
 
