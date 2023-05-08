@@ -461,6 +461,9 @@ def distance_mean(distances: dict[str, np.ndarray]) -> float:
 
 
 def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
+    if not metrics:
+        raise ValueError(f"list of metrics must not be empty, {len(metrics)=}")
+
     paths = metrics[0]["paths"]
     representations = {m["metadata"]["model"]: m["representations"] for m in metrics}
     metadata = {
@@ -469,6 +472,7 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
             m["metadata"]["target_distance_bias"] for m in metrics
         ],
     }
+    """
     means = [distance_mean(m["distances"]) for m in metrics]
     grand_mean = np.mean(np.array(means))
     distances = {
@@ -488,6 +492,24 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         k: np.mean(np.concatenate(v, axis=2), axis=2) * 2 * grand_mean
         for k, v in distances.items()
     }
+    """
+
+    # TODO THIS IS A TEMPORARY FIX THAT DOES NOT SCALE THE VALUES
+    distances = {
+        "embedding_target": [],
+        "embedding_embedding": [],
+        "candidate_target": [],
+        "candidate_embedding": [],
+        "pairs": [],
+    }
+
+    for k in distances:
+        for m in metrics:
+            distance = m["distances"][k]
+            if len(distance.shape) == 1:
+                distance = distance[:, None]
+            distances[k].append(distance[..., None])
+        distances[k] = np.mean(np.concatenate(distances[k], axis=2), axis=2)
 
     candidate_weighted_distances = calculate_weighted_distances(
         distances["embedding_target"],
@@ -597,7 +619,7 @@ def save_processed_candidate_images(
 def main(interactive: bool = False) -> None:
     # Processing Images
     metrics = get_multimodel_metrics(
-        ["Facenet512"], target_distance_bias=1
+        ["Facenet512", "SFace"], target_distance_bias=1
     )  # "SFace", "ArcFace"])
 
     # Saving scored images
