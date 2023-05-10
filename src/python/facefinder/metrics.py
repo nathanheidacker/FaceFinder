@@ -142,6 +142,21 @@ def cosine_dist(
     return np.ones(a.shape) - (a / np.matmul(b[:, None], c[None, :]))
 
 
+def euclid_dist(
+    source_reprs: np.ndarray,
+    target_reprs: np.ndarray,
+) -> np.ndarray:
+    # Dims 1 must match (length of representation vector)
+    target_reprs = np.array(target_reprs)[:, None, :]
+    source_reprs = np.array(source_reprs)[None, :, :]
+    assert source_reprs.shape[2] == target_reprs.shape[2]
+
+    target_reprs = target_reprs.repeat(source_reprs.shape[1], axis=1)
+    source_reprs = source_reprs.repeat(target_reprs.shape[0], axis=0)
+
+    return ((source_reprs - target_reprs) ** 2).sum(axis=2) ** 0.5
+
+
 def filter_duplicates(paths: list[Path], distances: list[float]) -> list[int]:
     """Returns a numpy index that will filter out the duplicates with non-max scores"""
     visited = defaultdict(list)
@@ -162,7 +177,7 @@ def get_filtered(
     candidate_paths: list[Path],
 ) -> tuple[list[Path], list[list[float]], list[float]]:
     # Finding metrics for distance from target image (BASE_FACE)
-    target_distances = cosine_dist(target_repr, candidate_reprs)
+    target_distances = euclid_dist(target_repr, candidate_reprs)
 
     # Filtering embedding duplicates by distance to target
     non_duplicate_idx = filter_duplicates(candidate_paths, target_distances)
@@ -230,7 +245,7 @@ def get_embedding_metrics(
 
     # Finding overall similarity between faces in the embedding train set
     embedding_embedding_distances = np.mean(
-        cosine_dist(representations, representations), axis=1
+        euclid_dist(representations, representations), axis=1
     )
     mean_embedding_distance = float(np.mean(embedding_embedding_distances))
 
@@ -266,7 +281,7 @@ def get_candidate_metrics(
     )
 
     # Distances between candidates and embeddings
-    candidate_embedding_pair_distances = cosine_dist(embedding_reprs, representations)
+    candidate_embedding_pair_distances = euclid_dist(embedding_reprs, representations)
     candidate_embedding_distances = candidate_embedding_pair_distances.mean(axis=1)
 
     # Weighting the candidate distances by the embedding image scores (relative to the target)
@@ -279,7 +294,7 @@ def get_candidate_metrics(
     # Doing the same for embedding images
     embedding_weighted_distances = calculate_weighted_distances(
         embedding_target_distances,
-        cosine_dist(embedding_reprs, embedding_reprs),
+        euclid_dist(embedding_reprs, embedding_reprs),
         target_distance_bias,
     )
 
@@ -460,6 +475,19 @@ def distance_mean(distances: dict[str, np.ndarray]) -> float:
     return total_distance / total_size
 
 
+def normalize(distances: np.ndarray) -> np.ndarray:
+    """Returns a set of z scores that have been right-shifted to min=0, mean=1"""
+    mean = distances.mean()
+    std = np.std(distances)
+    zscores = (distances - mean) / std
+
+    # Normalizing to min=0, mean (originally 0 by definition) = 1
+    zmin = -zscores.min()
+    zscores = (zscores + zmin) / zmin
+
+    return zscores
+
+
 def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     if not metrics:
         raise ValueError(f"list of metrics must not be empty, {len(metrics)=}")
@@ -506,9 +534,12 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     for k in distances:
         for m in metrics:
             distance = m["distances"][k]
+            distance = normalize(distance)
             if len(distance.shape) == 1:
                 distance = distance[:, None]
-            distances[k].append(distance[..., None])
+            distance = distance[:, None]
+
+            distances[k].append(distance)
         distances[k] = np.mean(np.concatenate(distances[k], axis=2), axis=2)
 
     candidate_weighted_distances = calculate_weighted_distances(
