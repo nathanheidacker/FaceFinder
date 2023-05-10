@@ -12,30 +12,148 @@ import io
 # Third Party Imports
 from deepface import DeepFace
 from deepface.commons.functions import extract_faces as _extract_faces
+from retinaface.commons.postprocess import alignment_procedure
 from tqdm import tqdm
 import numpy as np
+import mediapipe
 import cv2
 
 # Local Imports
 from facefinder import rust
 from . import metadata
-from .interact import InteractiveSession
 
 # Typing imports
 from typing import Callable, Any, Optional
 
+def _build_mediapipe():
+    mp_face_detection = mediapipe.solutions.face_detection
+    face_detection = mp_face_detection.FaceDetection(min_detection_confidence=0.99)
+    return face_detection
+
+_mediapipe = _build_mediapipe()
+
+def _normalize_mediapipe_detections(face_objs, target_size):
+    extracted_faces = []
+
+    for current_img, current_region, confidence in face_objs:
+        if current_img.shape[0] > 0 and current_img.shape[1] > 0:
+
+            # resize and padding
+            if current_img.shape[0] > 0 and current_img.shape[1] > 0:
+                factor_0 = target_size[0] / current_img.shape[0]
+                factor_1 = target_size[1] / current_img.shape[1]
+                factor = min(factor_0, factor_1)
+
+                dsize = (
+                    int(current_img.shape[1] * factor),
+                    int(current_img.shape[0] * factor),
+                )
+                current_img = cv2.resize(current_img, dsize)
+
+                diff_0 = target_size[0] - current_img.shape[0]
+                diff_1 = target_size[1] - current_img.shape[1]
+
+                # Put the base image in the middle of the padded image
+                current_img = np.pad(
+                    current_img,
+                    (
+                        (diff_0 // 2, diff_0 - diff_0 // 2),
+                        (diff_1 // 2, diff_1 - diff_1 // 2),
+                        (0, 0),
+                    ),
+                    "constant",
+                )
+
+            # double check: if target image is not still the same size with target.
+            if current_img.shape[0:2] != target_size:
+                current_img = cv2.resize(current_img, target_size)
+
+            # normalizing the image pixels
+            img_pixels = current_img[None, ...].astype(np.float32)
+            img_pixels /= 255  # normalize input in [0, 1]
+
+            # int cast is for the exception - object of type 'float32' is not JSON serializable
+            region_obj = {
+                "x": int(current_region[0]),
+                "y": int(current_region[1]),
+                "w": int(current_region[2]),
+                "h": int(current_region[3]),
+            }
+
+            extracted_face = [img_pixels, region_obj, confidence]
+            extracted_faces.append(extracted_face)
+
+    return extracted_faces
+
+def _mediapipe_detect(img, target_size, force_detection:bool = True, align=True):
+    with open(img, "rb") as img_f:
+        chunk = img_f.read()
+        chunk_arr = np.frombuffer(chunk, dtype=np.uint8)
+        img = cv2.imdecode(chunk_arr, cv2.IMREAD_COLOR)
+
+    resp = []
+
+    img_width = img.shape[1]
+    img_height = img.shape[0]
+
+    results = _mediapipe.process(img)
+
+    if results.detections:
+        for detection in results.detections:
+
+            (confidence,) = detection.score
+
+            bounding_box = detection.location_data.relative_bounding_box
+            landmarks = detection.location_data.relative_keypoints
+
+            x = int(bounding_box.xmin * img_width)
+            w = int(bounding_box.width * img_width)
+            y = int(bounding_box.ymin * img_height)
+            h = int(bounding_box.height * img_height)
+
+            right_eye = (int(landmarks[0].x * img_width), int(landmarks[0].y * img_height))
+            left_eye = (int(landmarks[1].x * img_width), int(landmarks[1].y * img_height))
+            nose = (int(landmarks[2].x * img_width), int(landmarks[2].y * img_height))
+            
+            if x > 0 and y > 0:
+                detected_face = img[y : y + h, x : x + w]
+                img_region = [x, y, w, h]
+
+                if align:
+                    detected_face = alignment_procedure(
+                        detected_face, right_eye, left_eye, nose
+                    )
+
+                resp.append((detected_face, img_region, confidence))
+
+    if not resp and force_detection:
+        raise ValueError("Face could not be detected with mediapipe")
+    
+    return _normalize_mediapipe_detections(resp, target_size)
 
 def extract_faces(image_path: Path, model: str) -> None:
     with contextlib.redirect_stdout(io.StringIO()):
-        return _extract_faces(
-            img=str(image_path),
-            target_size=metadata.MODEL_TARGET_SIZES[model],
-            detector_backend="mtcnn",
-            grayscale=False,
-            enforce_detection=False,
-            align=True,
-        )
+        try:
+            return _mediapipe_detect(str(image_path), metadata.MODEL_TARGET_SIZES[model])
+        except (ValueError, TypeError):
+            return _extract_faces(
+                img=str(image_path),
+                target_size=metadata.MODEL_TARGET_SIZES[model],
+                detector_backend="retinaface",
+                grayscale=False,
+                enforce_detection=False,
+                align=True,
+            )
 
+
+def _temp_view_extraction(objs, filename, show=False):
+    from PIL import Image
+    for data in objs:
+        data = (data[0][0, :, :, ::-1] * 255).astype(np.uint8)
+        image = Image.fromarray(data)
+        image.save(metadata.PATHS.EMBEDDING_SCORES_DIR.joinpath(filename))
+        if show:
+            image.show()
 
 def get_extracted_faces(image_path: Path, model: str) -> None:
     extracted_path = metadata.PATHS.EXTRACTED_FACES_DIR.joinpath(
@@ -44,6 +162,7 @@ def get_extracted_faces(image_path: Path, model: str) -> None:
 
     if not os.path.exists(extracted_path):
         img_objs = extract_faces(image_path, model)
+        _temp_view_extraction(img_objs, f"{image_path.name[:-4]}.png")
         with open(extracted_path, "wb+") as f:
             pickle.dump(img_objs, f)
         return img_objs
@@ -475,7 +594,7 @@ def distance_mean(distances: dict[str, np.ndarray]) -> float:
     return total_distance / total_size
 
 
-def normalize(distances: np.ndarray) -> np.ndarray:
+def get_zscores(distances: np.ndarray) -> np.ndarray:
     """Returns a set of z scores that have been right-shifted to min=0, mean=1"""
     mean = distances.mean()
     std = np.std(distances)
@@ -494,7 +613,7 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
 
     paths = metrics[0]["paths"]
     representations = {m["metadata"]["model"]: m["representations"] for m in metrics}
-    metadata = {
+    _metadata = {
         "model": [m["metadata"]["model"] for m in metrics],
         "target_distance_bias": [
             m["metadata"]["target_distance_bias"] for m in metrics
@@ -534,7 +653,7 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     for k in distances:
         for m in metrics:
             distance = m["distances"][k]
-            distance = normalize(distance)
+            distance /= metadata.THRESHOLDS[m["metadata"]["model"]]["euclidean"]
             if len(distance.shape) == 1:
                 distance = distance[:, None]
             distance = distance[:, None]
@@ -566,7 +685,7 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
         "representations": representations,
         "distances": distances,
         "metrics": sub_metrics,
-        "metadata": metadata,
+        "metadata": _metadata,
     }
 
     add_scores(metrics)
@@ -654,11 +773,10 @@ def main(interactive: bool = False) -> None:
     )  # "SFace", "ArcFace"])
 
     # Saving scored images
-    save_processed_embedding_images(metrics)
-    save_processed_candidate_images(metrics)
+    # save_processed_embedding_images(metrics)
+    # save_processed_candidate_images(metrics)
 
-    if interactive:
-        InteractiveSession(metrics).session()
+    x = 0
 
 
 if __name__ == "__main__":
