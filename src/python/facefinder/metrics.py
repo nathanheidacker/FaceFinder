@@ -176,6 +176,7 @@ def create_representation(
     image_path: Path,
     model: str,
     skip_face: bool = False,
+    choose_best: bool = False,
 ) -> list[list[float]]:
     img_objs = get_extracted_faces(image_path, model)
 
@@ -190,21 +191,25 @@ def create_representation(
                 align=True,
                 normalization="base",
             )
-            representations.append(embedding_obj[0]["embedding"])
+            representations.append((embedding_obj[0]["embedding"], confidence))
 
-    return representations
+    if choose_best:
+        representations.sort(key=lambda repr: repr[1], reverse=True)
+        return [representations[0][0]]
+    return [r[0] for r in representations]
 
 
 def get_representation(
     image_path: Path,
     model: str,
     skip_face: bool = False,
+    choose_best: bool = False
 ) -> list[list[float]]:
     repr_name = f"{model}_{os.path.splitext(image_path.name)[0]}.repr"
     repr_path = metadata.PATHS.REPRESENTATIONS_DIR.joinpath(repr_name).resolve()
 
     if not os.path.exists(repr_path):
-        img_representation = create_representation(image_path, model, skip_face)
+        img_representation = create_representation(image_path, model, skip_face, choose_best)
         with open(repr_path, "wb+") as f:
             pickle.dump(img_representation, f)
         return img_representation
@@ -352,7 +357,7 @@ def get_embedding_metrics(
     embedding_dir = embedding_dir or metadata.PATHS.EMBEDDING_IMAGES
 
     # Initial (non-filtered) target/embedding representations
-    target_representation = get_representation(target_path, model, skip_face=True)
+    target_representation = get_representation(target_path, model, skip_face=True, choose_best=True)
     paths, representations = get_representations(embedding_dir, model, skip_face=True)
 
     # Filtering representations/paths by distance to target repr
