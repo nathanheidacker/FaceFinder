@@ -664,12 +664,12 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
     candidate_weighted_distances = calculate_weighted_distances(
         distances["embedding_target"],
         distances["candidate_embedding"],
-        np.mean(metadata["target_distance_bias"]),
+        np.mean(_metadata["target_distance_bias"]),
     )
     embedding_weighted_distances = calculate_weighted_distances(
         distances["embedding_target"],
         distances["embedding_embedding"],
-        np.mean(metadata["target_distance_bias"]),
+        np.mean(_metadata["target_distance_bias"]),
     )
     embedding_accuracy = np.mean(distances["embedding_target"])
     embedding_coherence = np.mean(distances["embedding_embedding"])
