@@ -312,19 +312,6 @@ def get_filtered(
     return candidate_paths, candidate_reprs, target_distances
 
 
-def calculate_weighted_distances_old(
-    embedding_target_distances: list[float],
-    candidate_embedding_distances: list[list[float]],
-    target_distance_bias: int = 1,
-) -> list[float]:
-    weights = np.power(embedding_target_distances.T, target_distance_bias)
-    weighted_distances = np.power(
-        candidate_embedding_distances * weights,
-        1 / (target_distance_bias + 1),
-    )
-    return np.mean(weighted_distances, axis=1)
-
-
 def calculate_weighted_distances(
     embedding_target_distances: list[float],
     candidate_embedding_distances: list[list[float]],
@@ -624,27 +611,6 @@ def merge_metrics(metrics: list[dict[str, Any]]) -> dict[str, Any]:
             m["metadata"]["target_distance_bias"] for m in metrics
         ],
     }
-    """
-    means = [distance_mean(m["distances"]) for m in metrics]
-    grand_mean = np.mean(np.array(means))
-    distances = {
-        "embedding_target": [],
-        "embedding_embedding": [],
-        "candidate_target": [],
-        "candidate_embedding": [],
-        "pairs": [],
-    }
-    for m, mean in zip(metrics, means):
-        scaler = create_scaler(mean)
-        for k, v in m["distances"].items():
-            if len(v.shape) == 1:
-                v = v[:, None]
-            distances[k].append(scaler(v)[:, :, None])
-    distances = {
-        k: np.mean(np.concatenate(v, axis=2), axis=2) * 2 * grand_mean
-        for k, v in distances.items()
-    }
-    """
 
     # TODO THIS IS A TEMPORARY FIX THAT DOES NOT SCALE THE VALUES
     distances = {
