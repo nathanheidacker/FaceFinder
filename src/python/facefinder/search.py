@@ -92,7 +92,6 @@ def choose_k_concat(
     threshold = 0
     for model in models:
         model_reprs = concat(metrics["representations"][model])
-        print(model_reprs.shape[1])
         norm = np.linalg.norm(model_reprs)
         reprs.append(model_reprs / norm)
         threshold += metadata.THRESHOLDS[model]["euclidean_l2"] * model_reprs.shape[1]
